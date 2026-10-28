@@ -1,0 +1,82 @@
+name: Package SideStore compatible IPA
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download verified original build
+        uses: actions/download-artifact@v4
+        with:
+          name: SCInsta_sideloaded_v1.1.1
+          run-id: 40639571950
+          github-token: ${{ github.token }}
+          path: original
+      - name: Remove app extensions and verify retained files
+        shell: bash
+        run: |
+          mkdir output
+          cat > repack.py <<'PYTHON'
+          import hashlib, json, pathlib, sys, zipfile
+          src, dst = map(pathlib.Path, sys.argv[1:])
+          assert hashlib.file_digest(src.open('rb'), 'sha256').hexdigest() == 'bb7de03d10d0c2567f92ac2c5155a2b43cf559d4f42bd7c002a229101c600c62'
+          removed = set()
+          with zipfile.ZipFile(src) as original, zipfile.ZipFile(dst, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as fixed:
+              assert original.testzip() is None
+              for entry in original.infolist():
+                  parts = entry.filename.split('/')
+                  extensions = [p for p in parts if p.endswith('.appex')]
+                  if extensions:
+                      removed.update(extensions)
+                      continue
+                  fixed.writestr(entry, original.read(entry))
+          with zipfile.ZipFile(src) as original, zipfile.ZipFile(dst) as fixed:
+              assert fixed.testzip() is None
+              assert not any('.appex' in n.split('/') for n in fixed.namelist())
+              assert not any(any(p.endswith('.appex') for p in n.split('/')) for n in fixed.namelist())
+              for entry in fixed.infolist():
+                  assert hashlib.sha256(fixed.read(entry)).digest() == hashlib.sha256(original.read(entry.filename)).digest(), entry.filename
+          assert len(removed) == 8, removed
+          print(json.dumps({'removed_extensions':sorted(removed),'size':dst.stat().st_size,'sha256':hashlib.file_digest(dst.open('rb'),'sha256').hexdigest(),'retained_files':'byte-identical'},indent=2))
+          PYTHON
+          python3 repack.py original/SCInsta_sideloaded_v1.1.1.ipa output/SCInsta_1.1.1_Instagram_418.2.0_SideStore_NoExtensions.ipa
+          cat > verify.py <<'PYTHON'
+          import hashlib,json,plistlib,struct,sys,zipfile
+          from pathlib import Path
+          p=Path(sys.argv[1])
+          with zipfile.ZipFile(p) as z:
+              bad=z.testzip()
+              if bad: raise ValueError('Corrupt ZIP member: '+bad)
+              infos=[n for n in z.namelist() if n.startswith('Payload/') and n.endswith('.app/Info.plist') and n.count('/')==2]
+              assert len(infos)==1,infos
+              info=plistlib.loads(z.read(infos[0])); root=infos[0][:-len('Info.plist')]
+              exe=z.read(root+info['CFBundleExecutable'])
+              assert exe[:4]==b'\xcf\xfa\xed\xfe', 'Expected thin arm64 Mach-O'
+              ncmds=struct.unpack_from('<I',exe,16)[0]; pos=32; encrypted=[]; loads=[]
+              for _ in range(ncmds):
+                  cmd,size=struct.unpack_from('<II',exe,pos)
+                  assert size>=8 and pos+size<=len(exe)
+                  if cmd in (0x21,0x2c): encrypted.append(struct.unpack_from('<I',exe,pos+16)[0])
+                  if cmd in (0xc,0x80000018,0x8000001f):
+                      off=struct.unpack_from('<I',exe,pos+8)[0]
+                      loads.append(exe[pos+off:pos+size].split(b'\0')[0].decode())
+                  pos+=size
+              assert not any(encrypted),'Executable is still encrypted'
+              dylibs=[n for n in z.namelist() if n.endswith('.dylib') and any(x in n for x in ('SCInsta','FLEXing','libflex'))]
+              assert any('SCInsta.dylib' in n for n in dylibs),'SCInsta dylib missing'
+              assert any('SCInsta.dylib' in n for n in loads),'SCInsta load command missing'
+              result={'file':p.name,'size':p.stat().st_size,'sha256':hashlib.file_digest(p.open('rb'),'sha256').hexdigest(),'bundle_id':info.get('CFBundleIdentifier'),'version':info.get('CFBundleShortVersionString'),'minimum_ios':info.get('MinimumOSVersion'),'encrypted_flags':encrypted,'tweak_libraries':dylibs,'tweak_load_commands':[n for n in loads if any(x in n for x in ('SCInsta','FLEXing','libflex'))],'zip_members':len(z.namelist())}
+              print(json.dumps(result,indent=2))
+          PYTHON
+          python3 verify.py output/SCInsta_1.1.1_Instagram_418.2.0_SideStore_NoExtensions.ipa
+      - name: Upload corrected IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SCInsta-SideStore-NoExtensions
+          path: output/*.ipa
+          compression-level: 0
+          if-no-files-found: error
