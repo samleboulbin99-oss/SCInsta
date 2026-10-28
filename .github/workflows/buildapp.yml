@@ -38,7 +38,7 @@ jobs:
                 submodules: recursive
 
             - name: Install Dependencies
-              run: brew install ldid dpkg make
+              run: brew install ldid dpkg make aria2
 
             - name: Set PATH environment variable
               run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH 
@@ -91,7 +91,7 @@ jobs:
                 cd main
 
                 mkdir -p packages
-                wget "$Instagram_URL" --no-verbose -O packages/com.burbn.instagram.ipa
+                aria2c --max-connection-per-server=8 --split=8 --min-split-size=1M --connect-timeout=20 --timeout=30 --max-tries=5 --retry-wait=5 --summary-interval=30 --file-allocation=none --dir=packages --out=com.burbn.instagram.ipa "$Instagram_URL"
 
                 echo "71f117e343cc9212d2ba39cd59cafd2e470f1216  packages/com.burbn.instagram.ipa" | shasum -a 1 -c -
                 unzip -tq packages/com.burbn.instagram.ipa
@@ -111,7 +111,9 @@ jobs:
             
             - name: Build SCInsta tweak for sideloading (as IPA)
               run: |
-                pip install --force-reinstall https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+                python3 -m venv "$RUNNER_TEMP/scinsta-venv"
+                source "$RUNNER_TEMP/scinsta-venv/bin/activate"
+                python -m pip install https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
                 
                 cd main
                 curl -Lo ipapatch https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.3/ipapatch.macos-arm64
@@ -128,12 +130,14 @@ jobs:
             - name: Rename IPA to include version info
               run: |
                 cd main/packages
-                mv "$(ls -t | head -n1)" "SCInsta_sideloaded_v${SCINSTA_VERSION}.ipa"
+                mv SCInsta-sideloaded.ipa "SCInsta_sideloaded_v${SCINSTA_VERSION}.ipa"
+                unzip -tq "SCInsta_sideloaded_v${SCINSTA_VERSION}.ipa"
+                shasum -a 256 "SCInsta_sideloaded_v${SCINSTA_VERSION}.ipa"
 
             - name: Pass package name to upload action
               id: package_name
               run: |
-                echo "package=$(ls -t main/packages |  head -n1)" >> "$GITHUB_OUTPUT"
+                echo "package=SCInsta_sideloaded_v${SCINSTA_VERSION}.ipa" >> "$GITHUB_OUTPUT"
 
             - name: Upload Artifact
               if: ${{ inputs.upload_artifact }}
@@ -149,6 +153,7 @@ jobs:
                 name: SCInsta_sideloaded_v${{ steps.scinsta_version.outputs.version }}
                 files: ${{ github.workspace }}/main/packages/SCInsta_sideloaded_v*.ipa
                 draft: true
+                tag_name: sideload-${{ github.run_number }}
 
             - name: Output Release URL
               run: |
