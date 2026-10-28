@@ -26,6 +26,7 @@ jobs:
     build:
         name: Build SCInsta
         runs-on: macos-latest
+        timeout-minutes: 35
         permissions:
             contents: write
 
@@ -92,6 +93,8 @@ jobs:
                 mkdir -p packages
                 wget "$Instagram_URL" --no-verbose -O packages/com.burbn.instagram.ipa
 
+                echo "71f117e343cc9212d2ba39cd59cafd2e470f1216  packages/com.burbn.instagram.ipa" | shasum -a 1 -c -
+                unzip -tq packages/com.burbn.instagram.ipa
                 ls -la packages
                 
               env:
